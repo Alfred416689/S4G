@@ -16,6 +16,7 @@ type Product = {
   condition: string;
   sizes: string[];
   image: string;
+  gallery?: string[];
   badge?: string;
   stock: number;
   featured?: boolean;
@@ -60,10 +61,14 @@ function ProductImage({
   src,
   alt,
   sizes,
+  className = "",
+  objectFit = "cover",
 }: {
   src: string;
   alt: string;
   sizes: string;
+  className?: string;
+  objectFit?: "cover" | "contain";
 }) {
   const [unavailable, setUnavailable] = useState(!src);
   if (unavailable) {
@@ -71,7 +76,7 @@ function ProductImage({
       <div
         role="img"
         aria-label={`${alt} image unavailable`}
-        className="flex aspect-[4/5] items-center justify-center bg-[#292821] font-display text-3xl tracking-[0.12em] text-[#c4b8a4]"
+        className={`flex aspect-[4/5] items-center justify-center bg-[#292821] font-display text-3xl tracking-[0.12em] text-[#c4b8a4] ${className}`}
       >
         S2G
       </div>
@@ -84,7 +89,7 @@ function ProductImage({
       fill
       sizes={sizes}
       quality={80}
-      className="object-cover transition duration-500 group-hover:scale-[1.035]"
+      className={`${objectFit === "contain" ? "object-contain" : "object-cover"} transition duration-500 group-hover:scale-[1.035] ${className}`}
       onError={() => setUnavailable(true)}
     />
   );
@@ -92,6 +97,22 @@ function ProductImage({
 
 function formatPrice(price: number) {
   return `₹${price.toLocaleString("en-IN")}`;
+}
+
+function getProductGallery(product: Product) {
+  const gallery = Array.isArray(product.gallery)
+    ? [...new Set(product.gallery.filter(
+        (image) => typeof image === "string" && image.trim().length > 0,
+      ))]
+    : [];
+  const mainImage =
+    typeof product.image === "string" && product.image.trim().length > 0
+      ? product.image
+      : "";
+
+  return mainImage
+    ? [mainImage, ...gallery.filter((image) => image !== mainImage)]
+    : gallery;
 }
 
 export default function CollectionBrowser({ collection }: { collection: Collection }) {
@@ -111,6 +132,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [productDetails, setProductDetails] = useState<ProductDetails | null>(null);
   const [productDetailsError, setProductDetailsError] = useState("");
+  const [selectedImageIndex, setSelectedImageIndex] = useState(0);
   const [selectedSize, setSelectedSize] = useState("");
   const [cart, setCart] = useState<CartItem[]>([]);
   const [cartLoading, setCartLoading] = useState(true);
@@ -201,19 +223,27 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
     return () => controller.abort();
   }, []);
 
+  const selectedProductId = selectedProduct?.id;
+  const visibleProductDetails =
+    productDetails?.id === selectedProductId ? productDetails : null;
+
   useEffect(() => {
-    if (!selectedProduct) return;
+    if (selectedProductId === undefined) return;
     const controller = new AbortController();
     async function loadDetails() {
       try {
-        const response = await fetch(`/api/products/${selectedProduct!.id}`, {
+        const response = await fetch(`/api/products/${selectedProductId}`, {
           signal: controller.signal,
         });
         const result = (await response.json()) as {
           product?: ProductDetails;
           error?: string;
         };
-        if (!response.ok || !result.product) {
+        if (
+          !response.ok ||
+          !result.product ||
+          result.product.id !== selectedProductId
+        ) {
           throw new Error(result.error || "Product details could not be loaded.");
         }
         setProductDetails(result.product);
@@ -226,7 +256,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
     }
     void loadDetails();
     return () => controller.abort();
-  }, [selectedProduct]);
+  }, [selectedProductId]);
 
   const productCount = useMemo(() => products.length, [products]);
 
@@ -333,10 +363,21 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
   const controlClass = isCurated
     ? "border-white/15 bg-[#1a1a1a] text-[#F5F2EC]"
     : "border-[#171715]/20 bg-white/70 text-[#171715]";
+  const openQuickView = (product: Product) => {
+    setProductDetails(null);
+    setProductDetailsError("");
+    setSelectedImageIndex(0);
+    setSelectedSize("");
+    setSelectedProduct(product);
+  };
+  const quickViewGallery = selectedProduct
+    ? getProductGallery(visibleProductDetails ?? selectedProduct)
+    : [];
+  const selectedGalleryImage = quickViewGallery[selectedImageIndex];
 
   return (
     <MotionConfig reducedMotion="user">
-      <main className={`min-h-screen overflow-hidden ${shellClass}`}>
+      <main className={`min-h-[100svh] w-full overflow-hidden ${shellClass}`}>
         <header className={`border-b ${isCurated ? "border-white/10" : "border-[#171715]/10"}`}>
           <div className="track-limiter flex min-h-16 items-center justify-between gap-4 py-3">
             <Link href="/" className="font-display text-2xl tracking-[0.14em]" aria-label="S2G home">
@@ -355,7 +396,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
           {isCurated && (
             <div className="pointer-events-none absolute -right-20 top-0 h-72 w-72 rounded-full bg-[#786a53]/10 blur-3xl" />
           )}
-          <div className="track-limiter relative py-14 sm:py-20">
+          <div className="track-limiter relative py-9 sm:py-20">
             <p className={`section-label ${isCurated ? "text-[#c4b8a4]" : "!text-[#5d5a52]"}`}>
               {collectionInfo.eyebrow}
             </p>
@@ -378,7 +419,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
           </div>
         </section>
 
-        <section className="track-limiter py-8 sm:py-12">
+        <section className="track-limiter py-6 sm:py-12">
           <div className="grid gap-3 sm:grid-cols-[1.5fr_0.75fr_0.75fr]">
             <label className="block">
               <span className="sr-only">Search this collection</span>
@@ -419,7 +460,11 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
           </div>
         </section>
 
-        <section className="track-limiter pb-16 sm:pb-24" aria-label={`${collectionInfo.heading} products`}>
+        <section
+          hidden={selectedProduct !== null}
+          className="track-limiter pb-16 sm:pb-24"
+          aria-label={`${collectionInfo.heading} products`}
+        >
           {loading ? (
             <div role="status" aria-label="Loading products" className="grid grid-cols-2 gap-3 sm:gap-5 lg:grid-cols-4">
               {Array.from({ length: 8 }, (_, index) => (
@@ -461,12 +506,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
                 >
                   <button
                     type="button"
-                    onClick={() => {
-                      setProductDetails(null);
-                      setProductDetailsError("");
-                      setSelectedSize("");
-                      setSelectedProduct(product);
-                    }}
+                    onClick={() => openQuickView(product)}
                     aria-label={`Quick view ${product.name}`}
                     className="relative block aspect-[4/5] w-full overflow-hidden bg-[#292821] text-left"
                   >
@@ -497,12 +537,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
                     </p>
                     <button
                       type="button"
-                      onClick={() => {
-                        setProductDetails(null);
-                        setProductDetailsError("");
-                        setSelectedSize("");
-                        setSelectedProduct(product);
-                      }}
+                      onClick={() => openQuickView(product)}
                       className="mt-1 block max-w-full truncate text-left text-sm font-semibold sm:text-base"
                     >
                       {product.name}
@@ -562,7 +597,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
         <AnimatePresence>
           {selectedProduct && (
             <motion.div
-              className="fixed inset-0 z-[60] flex items-end justify-center bg-black/70 p-0 backdrop-blur-sm sm:items-center sm:p-5"
+              className="fixed inset-0 z-[60] flex items-end justify-center bg-[#111111] p-0 sm:items-center sm:bg-black/70 sm:p-5 sm:backdrop-blur-sm"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -577,7 +612,7 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
                 initial={{ y: 24, opacity: 0 }}
                 animate={{ y: 0, opacity: 1 }}
                 exit={{ y: 24, opacity: 0 }}
-                className={`relative grid max-h-[92dvh] w-full max-w-4xl grid-cols-1 overflow-y-auto rounded-t-2xl sm:grid-cols-2 sm:rounded-2xl ${isCurated ? "bg-[#F5F2EC] text-[#111111]" : "bg-white text-[#171715]"}`}
+                className={`relative grid h-[100dvh] max-h-[100dvh] w-full max-w-4xl grid-cols-1 overflow-y-auto sm:h-auto sm:max-h-[92dvh] sm:grid-cols-2 sm:rounded-2xl ${isCurated ? "bg-[#F5F2EC] text-[#111111]" : "bg-white text-[#171715]"}`}
               >
                 <button
                   type="button"
@@ -587,14 +622,53 @@ export default function CollectionBrowser({ collection }: { collection: Collecti
                 >
                   ×
                 </button>
-                <div className="relative min-h-[300px] bg-[#292821] sm:min-h-[560px]">
-                  <Image
-                    src={selectedProduct.image}
-                    alt={selectedProduct.name}
-                    fill
-                    sizes="(max-width: 640px) 100vw, 50vw"
-                    className="object-cover"
-                  />
+                <div className="bg-[#292821] sm:min-h-[560px]">
+                  {selectedGalleryImage ? (
+                    <div className="relative h-[55svh] min-h-[240px] sm:h-auto sm:min-h-[560px]">
+                      <ProductImage
+                        key={`${selectedProduct.id}-${selectedImageIndex}`}
+                        src={selectedGalleryImage}
+                        alt={selectedProduct.name}
+                        sizes="(max-width: 640px) 100vw, 50vw"
+                        className="h-full w-full"
+                        objectFit="contain"
+                      />
+                    </div>
+                  ) : (
+                    <div
+                      role="img"
+                      aria-label={`No image available for ${selectedProduct.name}`}
+                      className="flex h-[55svh] min-h-[240px] items-center justify-center font-display text-3xl tracking-[0.12em] text-[#c4b8a4] sm:h-[560px]"
+                    >
+                      S2G
+                    </div>
+                  )}
+                  {quickViewGallery.length > 1 && (
+                    <div className="flex gap-2 overflow-x-auto p-3 sm:p-4">
+                      {quickViewGallery.map((image, index) => (
+                        <button
+                          key={`${selectedProduct.id}-${index}`}
+                          type="button"
+                          onClick={() => setSelectedImageIndex(index)}
+                          aria-label={`Show ${selectedProduct.name}, view ${index + 1}`}
+                          aria-pressed={selectedImageIndex === index}
+                          className={`relative h-14 w-14 shrink-0 overflow-hidden border sm:h-16 sm:w-16 ${
+                            selectedImageIndex === index
+                              ? "border-[#a98d66]"
+                              : "border-white/25"
+                          }`}
+                        >
+                          <ProductImage
+                            key={`${selectedProduct.id}-${index}`}
+                            src={image}
+                            alt={`Preview ${index + 1} for ${selectedProduct.name}`}
+                            sizes="64px"
+                            className="h-full w-full"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
                 <div className="p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] sm:p-8">
                   <p className="text-[0.58rem] font-bold uppercase tracking-[0.2em] text-[#6b665d]">

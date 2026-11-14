@@ -72,6 +72,9 @@ export default function AdminPage() {
   const [addingProduct, setAddingProduct] = useState(false);
   const [productFormError, setProductFormError] = useState("");
   const [productFormSuccess, setProductFormSuccess] = useState("");
+  const [deletingProductId, setDeletingProductId] = useState<number | null>(null);
+  const [productActionError, setProductActionError] = useState("");
+  const [productActionSuccess, setProductActionSuccess] = useState("");
 
   const loadProducts = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch("/api/admin/products", { signal });
@@ -267,6 +270,46 @@ export default function AdminPage() {
       );
     } finally {
       setAddingProduct(false);
+    }
+  };
+
+  const deleteProduct = async (product: ManagedProduct) => {
+    if (deletingProductId !== null) return;
+    if (!window.confirm(`Delete "${product.name}" from the storefront?`)) return;
+
+    setDeletingProductId(product.id);
+    setProductActionError("");
+    setProductActionSuccess("");
+    try {
+      const response = await fetch(`/api/admin/products/${product.id}`, {
+        method: "DELETE",
+      });
+      const result = (await response.json()) as {
+        deleted?: boolean;
+        warning?: string;
+        error?: string;
+      };
+      if (!response.ok || result.deleted !== true) {
+        throw new Error(result.error || "The product could not be deleted.");
+      }
+
+      setProducts((current) => current.filter((item) => item.id !== product.id));
+      if (editingProduct?.id === product.id) {
+        setEditingProduct(null);
+        setProductFormError("");
+        setProductFormSuccess("");
+      }
+      setProductActionSuccess(
+        result.warning
+          ? `${product.name} was deleted. ${result.warning}`
+          : `${product.name} has been deleted.`,
+      );
+    } catch (error) {
+      setProductActionError(
+        error instanceof Error ? error.message : "The product could not be deleted.",
+      );
+    } finally {
+      setDeletingProductId(null);
     }
   };
 
@@ -563,6 +606,16 @@ export default function AdminPage() {
                   Existing listings are assigned to Everyday Finds by default.
                 </p>
               </div>
+              {productActionError && (
+                <p role="alert" className="mb-4 rounded-xl border border-[#8c3f38]/40 bg-[#8c3f38]/10 px-4 py-3 text-sm text-[#F5D6D1]">
+                  {productActionError}
+                </p>
+              )}
+              {productActionSuccess && (
+                <p role="status" className="mb-4 rounded-xl border border-emerald-500/30 bg-emerald-500/10 px-4 py-3 text-sm text-emerald-100">
+                  {productActionSuccess}
+                </p>
+              )}
               {products.length === 0 ? (
                 <div className="rounded-2xl border border-dashed border-white/20 bg-[#171717] px-6 py-10 text-center text-sm text-[#D9D6CF]">
                   No products are available to manage yet.
@@ -597,21 +650,31 @@ export default function AdminPage() {
                           {product.featured ? " · Featured" : ""}
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setEditingProduct(product);
-                          setProductFormError("");
-                          setProductFormSuccess("");
-                          document.getElementById("product-form")?.scrollIntoView({
-                            behavior: "smooth",
-                            block: "start",
-                          });
-                        }}
-                        className="min-h-11 rounded-full border border-white/20 px-5 text-[0.62rem] font-bold uppercase tracking-[0.16em] transition hover:bg-white hover:text-[#111111]"
-                      >
-                        Edit product
-                      </button>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingProduct(product);
+                            setProductFormError("");
+                            setProductFormSuccess("");
+                            document.getElementById("product-form")?.scrollIntoView({
+                              behavior: "smooth",
+                              block: "start",
+                            });
+                          }}
+                          className="min-h-11 rounded-full border border-white/20 px-5 text-[0.62rem] font-bold uppercase tracking-[0.16em] transition hover:bg-white hover:text-[#111111]"
+                        >
+                          Edit product
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void deleteProduct(product)}
+                          disabled={deletingProductId !== null}
+                          className="min-h-11 rounded-full border border-[#b77d73]/60 px-5 text-[0.62rem] font-bold uppercase tracking-[0.16em] text-[#F5D6D1] transition hover:bg-[#8c3f38] disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {deletingProductId === product.id ? "Deleting…" : "Delete product"}
+                        </button>
+                      </div>
                     </article>
                   ))}
                 </div>

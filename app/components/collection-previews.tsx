@@ -3,9 +3,15 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import {
+  type CachedProduct,
+  getCachedProductsByCollection,
+  saveProducts,
+} from "@/app/lib/product-cache";
 
 type ProductCollection = "everyday" | "curated";
 
+// PreviewProduct is a subset of CachedProduct — compatible with both
 type PreviewProduct = {
   id: number;
   name: string;
@@ -18,6 +24,7 @@ type PreviewProduct = {
 
 type PreviewState = {
   products: PreviewProduct[];
+  fromCache: boolean;
   error: string;
 };
 
@@ -57,10 +64,16 @@ function ProductPrice({ product }: { product: PreviewProduct }) {
   );
 }
 
-function EverydayPreview({
-  products,
-  error,
-}: PreviewState) {
+// Small badge shown when products are served from the offline cache
+function CachedBadge() {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-[#D9D6CF]/30 px-2 py-0.5 text-[0.52rem] font-semibold uppercase tracking-[0.14em] text-[#D9D6CF]/70">
+      ✦ Cached
+    </span>
+  );
+}
+
+function EverydayPreview({ products, fromCache, error }: PreviewState) {
   return (
     <section className="bg-[#F5F2EC] py-16 text-[#171715] md:py-24">
       <div className="track-limiter">
@@ -74,9 +87,12 @@ function EverydayPreview({
               {collectionInfo.everyday.subtitle}
             </p>
           </div>
-          <p className="max-w-md text-sm leading-6 text-[#59574f]">
-            {collectionInfo.everyday.description}
-          </p>
+          <div className="flex flex-col items-end gap-2">
+            <p className="max-w-md text-sm leading-6 text-[#59574f]">
+              {collectionInfo.everyday.description}
+            </p>
+            {fromCache && <CachedBadge />}
+          </div>
         </div>
 
         {error ? (
@@ -138,7 +154,7 @@ function EverydayPreview({
   );
 }
 
-function CuratedPreview({ products, error }: PreviewState) {
+function CuratedPreview({ products, fromCache, error }: PreviewState) {
   const [feature, ...others] = products;
 
   return (
@@ -154,9 +170,12 @@ function CuratedPreview({ products, error }: PreviewState) {
               {collectionInfo.curated.subtitle}
             </p>
           </div>
-          <p className="max-w-md text-sm leading-6 text-[#D9D6CF]">
-            {collectionInfo.curated.description}
-          </p>
+          <div className="flex flex-col items-end gap-2">
+            <p className="max-w-md text-sm leading-6 text-[#D9D6CF]">
+              {collectionInfo.curated.description}
+            </p>
+            {fromCache && <CachedBadge />}
+          </div>
         </div>
 
         {error ? (
@@ -242,58 +261,122 @@ function CuratedPreview({ products, error }: PreviewState) {
   );
 }
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function toPreviewProduct(p: CachedProduct): PreviewProduct {
+  return {
+    id:             p.id,
+    name:           p.name,
+    price:          p.price,
+    compareAtPrice: p.compareAtPrice,
+    category:       p.category,
+    image:          p.image,
+    badge:          p.badge,
+  };
+}
+
+// Sort cached products the same way the API does for "featured" sort:
+// featured=true first, then by id ascending
+function sortCached(products: CachedProduct[]): CachedProduct[] {
+  return [...products].sort((a, b) => {
+    if (a.featured !== b.featured) return a.featured ? -1 : 1;
+    return a.id - b.id;
+  });
+}
+
+// ─── Main component ───────────────────────────────────────────────────────────
+
 export default function CollectionPreviews() {
   const [previews, setPreviews] = useState<Record<ProductCollection, PreviewState>>({
-    everyday: { products: [], error: "" },
-    curated: { products: [], error: "" },
+    everyday: { products: [], fromCache: false, error: "" },
+    curated:  { products: [], fromCache: false, error: "" },
   });
+
+  async function loadCollection(
+    collection: ProductCollection,
+    signal: AbortSignal,
+  ) {
+    // ── Offline path ──────────────────────────────────────────────────────────
+    if (!navigator.onLine) {
+      const cached = await getCachedProductsByCollection(collection);
+      const sorted = sortCached(cached).slice(0, 4);
+      setPreviews((current) => ({
+        ...current,
+        [collection]: sorted.length > 0
+          ? { products: sorted.map(toPreviewProduct), fromCache: true, error: "" }
+          : { products: [], fromCache: false, error: "You're offline — connect to browse this collection." },
+      }));
+      return;
+    }
+
+    // ── Online path ───────────────────────────────────────────────────────────
+    try {
+      const params = new URLSearchParams({
+        collection,
+        page:  "1",
+        limit: "4",
+        sort:  "featured",
+      });
+      const response = await fetch(`/api/products?${params}`, { signal });
+      const result = (await response.json()) as {
+        products?: CachedProduct[];
+        error?: string;
+      };
+      if (!response.ok || !Array.isArray(result.products)) {
+        throw new Error(result.error || "This collection could not be loaded.");
+      }
+
+      // Update UI immediately with fresh data
+      setPreviews((current) => ({
+        ...current,
+        [collection]: { products: result.products!.map(toPreviewProduct), fromCache: false, error: "" },
+      }));
+
+      // Persist to IndexedDB in the background — non-blocking
+      void saveProducts(result.products!);
+    } catch (error) {
+      if (signal.aborted) return;
+
+      // Network failed mid-request — fall back to cache
+      const cached = await getCachedProductsByCollection(collection);
+      const sorted = sortCached(cached).slice(0, 4);
+      setPreviews((current) => ({
+        ...current,
+        [collection]: sorted.length > 0
+          ? { products: sorted.map(toPreviewProduct), fromCache: true, error: "" }
+          : {
+              products: [],
+              fromCache: false,
+              error: error instanceof Error ? error.message : "This collection could not be loaded.",
+            },
+      }));
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
 
-    async function loadCollection(collection: ProductCollection) {
-      try {
-        const params = new URLSearchParams({
-          collection,
-          page: "1",
-          limit: "4",
-          sort: "featured",
-        });
-        const response = await fetch(`/api/products?${params}`, {
-          signal: controller.signal,
-        });
-        const result = (await response.json()) as {
-          products?: PreviewProduct[];
-          error?: string;
-        };
-        if (!response.ok || !Array.isArray(result.products)) {
-          throw new Error(result.error || "This collection could not be loaded.");
-        }
-        setPreviews((current) => ({
-          ...current,
-          [collection]: { products: result.products!, error: "" },
-        }));
-      } catch (error) {
-        if (controller.signal.aborted) return;
-        setPreviews((current) => ({
-          ...current,
-          [collection]: {
-            products: [],
-            error: error instanceof Error ? error.message : "This collection could not be loaded.",
-          },
-        }));
-      }
-    }
+    void loadCollection("everyday", controller.signal);
+    void loadCollection("curated",  controller.signal);
 
-    void loadCollection("everyday");
-    void loadCollection("curated");
-    return () => controller.abort();
+    // Refresh when connectivity returns
+    const handleOnline = () => {
+      void loadCollection("everyday", controller.signal);
+      void loadCollection("curated",  controller.signal);
+    };
+    window.addEventListener("online", handleOnline);
+
+    return () => {
+      controller.abort();
+      window.removeEventListener("online", handleOnline);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
     <>
       <EverydayPreview {...previews.everyday} />
-      <CuratedPreview {...previews.curated} />
+      <CuratedPreview  {...previews.curated}  />
     </>
   );
 }

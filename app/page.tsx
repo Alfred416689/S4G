@@ -4,6 +4,11 @@ import { AnimatePresence, motion, MotionConfig } from "framer-motion";
 import Image from "next/image";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import CollectionPreviews from "@/app/components/collection-previews";
+import {
+  getCachedProduct,
+  getCachedProductsByCollection,
+  saveProducts,
+} from "@/app/lib/product-cache";
 
 type Product = {
   id: number;
@@ -169,6 +174,7 @@ export default function Home() {
   const [customerRequestsError, setCustomerRequestsError] = useState("");
   const [catalogLoading, setCatalogLoading] = useState(true);
   const [catalogError, setCatalogError] = useState("");
+  const [catalogFromCache, setCatalogFromCache] = useState(false);
   const [nextProductPage, setNextProductPage] = useState<number | null>(null);
   const [loadingMoreProducts, setLoadingMoreProducts] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState("");
@@ -216,6 +222,7 @@ export default function Home() {
     async function loadProducts() {
       setCatalogLoading(true);
       setCatalogError("");
+      setCatalogFromCache(false);
       setLoadMoreError("");
       setProducts([]);
       setNextProductPage(null);
@@ -240,13 +247,32 @@ export default function Home() {
         }
         setProducts(result.products);
         setNextProductPage(result.pagination.nextPage);
+        setCatalogFromCache(false);
+        void saveProducts(result.products);
       } catch (error) {
         if (controller.signal.aborted) return;
-        setCatalogError(
-          error instanceof Error
-            ? error.message
-            : "The product catalog could not be loaded. Check the MongoDB connection and try again.",
-        );
+        // Offline fallback: read from IndexedDB across both collections
+        const [everyday, curated] = await Promise.all([
+          getCachedProductsByCollection("everyday"),
+          getCachedProductsByCollection("curated"),
+        ]);
+        const merged = [...everyday, ...curated];
+        const unique = Array.from(new Map(merged.map((p) => [p.id, p])).values());
+        const sorted = unique.sort((a, b) => {
+          if (a.featured !== b.featured) return a.featured ? -1 : 1;
+          return a.id - b.id;
+        });
+        if (sorted.length > 0) {
+          setProducts(sorted as unknown as Product[]);
+          setNextProductPage(null);
+          setCatalogFromCache(true);
+        } else {
+          setCatalogError(
+            error instanceof Error
+              ? error.message
+              : "The product catalog could not be loaded.",
+          );
+        }
       } finally {
         if (!controller.signal.aborted) setCatalogLoading(false);
       }
@@ -259,6 +285,40 @@ export default function Home() {
       loadMoreControllerRef.current?.abort();
     };
   }, [search, selectedCategory, sortBy]);
+
+  // Refresh catalogue when connectivity returns
+  useEffect(() => {
+    const controller = new AbortController();
+    const handleOnline = () => {
+      if (catalogFromCache) {
+        setCatalogLoading(true);
+        setCatalogError("");
+        setCatalogFromCache(false);
+        setProducts([]);
+        setNextProductPage(null);
+        const params = new URLSearchParams({ page: "1", limit: "12", sort: sortBy });
+        if (search.trim()) params.set("search", search.trim());
+        if (selectedCategory !== "All") params.set("category", selectedCategory);
+        fetch(`/api/products?${params}`, { signal: controller.signal })
+          .then((r) => r.json())
+          .then((result: { products?: Product[]; pagination?: { nextPage: number | null } }) => {
+            if (Array.isArray(result.products) && result.pagination) {
+              setProducts(result.products);
+              setNextProductPage(result.pagination.nextPage);
+              void saveProducts(result.products);
+            }
+          })
+          .catch(() => undefined)
+          .finally(() => { if (!controller.signal.aborted) setCatalogLoading(false); });
+      }
+    };
+    window.addEventListener("online", handleOnline);
+    return () => {
+      controller.abort();
+      window.removeEventListener("online", handleOnline);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catalogFromCache, search, selectedCategory, sortBy]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -317,13 +377,35 @@ export default function Home() {
           throw new Error(result.error || "Product details could not be loaded.");
         }
         setSelectedProductDetails(result.product);
+        void saveProducts([result.product]);
       } catch (error) {
         if (controller.signal.aborted) return;
-        setProductDetailsError(
-          error instanceof Error
-            ? error.message
-            : "Product details could not be loaded.",
-        );
+        // Offline fallback: serve from IndexedDB
+        const cached = await getCachedProduct(selectedProductId!);
+        if (cached) {
+          setSelectedProductDetails({
+            id: cached.id,
+            name: cached.name,
+            price: cached.price,
+            compareAtPrice: cached.compareAtPrice,
+            category: cached.category,
+            collections: cached.collections as ("everyday" | "curated")[],
+            featured: cached.featured,
+            condition: cached.condition,
+            sizes: cached.sizes,
+            image: cached.image,
+            gallery: cached.gallery,
+            description: cached.description,
+            stock: cached.stock,
+            badge: cached.badge,
+          });
+        } else {
+          setProductDetailsError(
+            error instanceof Error
+              ? error.message
+              : "Product details could not be loaded.",
+          );
+        }
       } finally {
         if (!controller.signal.aborted) setProductDetailsLoading(false);
       }
@@ -427,6 +509,7 @@ export default function Home() {
       }
       setProducts((current) => [...current, ...nextProducts]);
       setNextProductPage(result.pagination.nextPage);
+      void saveProducts(nextProducts);
     } catch (error) {
       if (controller.signal.aborted) return;
       setLoadMoreError(
@@ -757,9 +840,16 @@ export default function Home() {
                 THE LATEST FINDS.
               </h2>
             </div>
-            <p className="max-w-lg text-sm leading-6 text-[#D9D6CF] md:text-right">
-              Browse the pieces currently listed in the S2G catalog.
-            </p>
+            <div className="flex flex-col items-end gap-2">
+              <p className="max-w-lg text-sm leading-6 text-[#D9D6CF] md:text-right">
+                Browse the pieces currently listed in the S2G catalog.
+              </p>
+              {catalogFromCache && (
+                <span className="inline-flex items-center gap-1 rounded-full border border-white/20 px-2 py-0.5 text-[0.52rem] font-semibold uppercase tracking-[0.14em] text-[#D9D6CF]/70">
+                  ✦ Cached
+                </span>
+              )}
+            </div>
           </motion.div>
 
           <div className="mb-8 grid gap-3 md:grid-cols-[1.2fr_0.6fr_0.6fr]">

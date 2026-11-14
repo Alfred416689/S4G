@@ -121,6 +121,7 @@ export async function PATCH(
         console.error("Could not remove the replaced product image.", cleanupError);
       }
     }
+
     return Response.json({ product: serializeCatalogProduct(product) });
   } catch (error) {
     if (uploadedPath) {
@@ -130,11 +131,75 @@ export async function PATCH(
         console.error("Could not remove the unreferenced replacement image.", cleanupError);
       }
     }
+
     console.error("Could not update the product in Supabase.", error);
     return errorResponse(
       getSupabaseConnectionErrorMessage(
         error,
         "The product could not be saved. Check the Supabase connection and try again.",
+      ),
+      503,
+    );
+  }
+}
+
+export async function DELETE(
+  _request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  if (!isAdminConfigurationReady()) {
+    return errorResponse("Supabase Auth and ADMIN_EMAIL must be configured.", 503);
+  }
+
+  try {
+    if (!(await getAdminSession())) {
+      return errorResponse("Sign in to delete products.", 401);
+    }
+  } catch (error) {
+    console.error("Could not verify the admin session for product deletion.", error);
+    return errorResponse(
+      getSupabaseConnectionErrorMessage(error, "The admin session could not be verified."),
+      503,
+    );
+  }
+
+  const { id } = await context.params;
+  if (!/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) {
+    return errorResponse("Product not found.", 404);
+  }
+
+  try {
+    const supabase = createSupabaseServiceClient();
+    const productId = Number(id);
+    const { data: deletedProduct, error: deleteError } = await supabase
+      .from("products")
+      .delete()
+      .eq("id", productId)
+      .select("image_path")
+      .maybeSingle();
+    if (deleteError) throw deleteError;
+    if (!deletedProduct) return errorResponse("Product not found.", 404);
+
+    let warning: string | undefined;
+    if (deletedProduct.image_path) {
+      try {
+        await removeImage(deletedProduct.image_path);
+      } catch (cleanupError) {
+        console.error("Could not remove the deleted product image from storage.", cleanupError);
+        warning = "The product image could not be removed from storage.";
+      }
+    }
+
+    return Response.json({
+      deleted: true,
+      ...(warning ? { warning } : {}),
+    });
+  } catch (error) {
+    console.error("Could not delete the product from Supabase.", error);
+    return errorResponse(
+      getSupabaseConnectionErrorMessage(
+        error,
+        "The product could not be deleted. Check the Supabase connection and try again.",
       ),
       503,
     );
