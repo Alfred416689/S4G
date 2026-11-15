@@ -10,7 +10,7 @@
 // Never cached: *.supabase.co, /api/* (except image routes),
 //               /admin, /_next/data/*, /favicon.ico, POST/non-GET
 
-const BUILD_ID    = 'm6yOBTLAv5KGRlFuy22r2';
+const BUILD_ID    = 'xcprKCLS8gOcqX34t_4G-';
 const SHELL_CACHE = 's2g-shell-'  + BUILD_ID;
 const IMAGE_CACHE = 's2g-images-' + BUILD_ID;
 const NAV_CACHE   = 's2g-nav-'    + BUILD_ID;
@@ -49,9 +49,9 @@ const PRECACHE_URLS = [
   "/_next/static/media/82b67ad56d243b47-s.09bkcrcuv-0po.woff2",
   "/_next/static/media/fbb7028efdf70529-s.1_0gbi-gsbqmd.woff2",
   "/_next/static/media/ffc7b595a48b6846-s.3q9gh2jvntrwt.woff2",
-  "/_next/static/m6yOBTLAv5KGRlFuy22r2/_buildManifest.js",
-  "/_next/static/m6yOBTLAv5KGRlFuy22r2/_clientMiddlewareManifest.js",
-  "/_next/static/m6yOBTLAv5KGRlFuy22r2/_ssgManifest.js"
+  "/_next/static/xcprKCLS8gOcqX34t_4G-/_buildManifest.js",
+  "/_next/static/xcprKCLS8gOcqX34t_4G-/_clientMiddlewareManifest.js",
+  "/_next/static/xcprKCLS8gOcqX34t_4G-/_ssgManifest.js"
 ];
 
 // ---------------------------------------------------------------------------
@@ -195,6 +195,22 @@ async function cacheFirstImage(request) {
   // Use the full URL string as cache key so query params (w, q) are preserved
   const cached = await cache.match(request.url);
   if (cached) return cached;
+
+  // Mobile miss: the same image may be cached at a different width (w= param).
+  // Scan for any cached entry sharing the same source url= so the image still
+  // appears on mobile even if only a desktop-width variant was cached.
+  if (isNextImage(request.url)) {
+    const srcUrl = new URL(request.url).searchParams.get('url');
+    if (srcUrl) {
+      const keys = await cache.keys();
+      for (const key of keys) {
+        if (new URL(key.url).searchParams.get('url') === srcUrl) {
+          return cache.match(key);
+        }
+      }
+    }
+  }
+
   try {
     // Use request.url (not the request object) to avoid inheriting the
     // original request mode/credentials which can cause CORS failures
